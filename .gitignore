@@ -8,3 +8,15 @@ build/
 /x/
 local.properties
 /scrcpy-server
+
+# GUI Web & Node
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+gui/backend/data/store.json
+*.log
+
+# Local Implementation Plans
+doc/phase*.md
+

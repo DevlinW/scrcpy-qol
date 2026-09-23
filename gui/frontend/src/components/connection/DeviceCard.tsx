@@ -71,9 +71,15 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
       {/* Middle Row: Device Info */}
       <div className="mb-4">
         <h4 className="text-base font-bold text-white tracking-tight group-hover:text-zinc-100 transition-colors">
-          {device.model}
+          {device.nickname || device.model}
         </h4>
         <p className="text-xs font-mono text-zinc-400 mt-0.5 select-all">
+          {device.nickname && device.nickname !== device.model ? (
+            <span>
+              <span className="text-zinc-300">{device.model}</span>
+              <span className="text-zinc-600 mx-1.5">•</span>
+            </span>
+          ) : null}
           {device.serial}
         </p>
       </div>

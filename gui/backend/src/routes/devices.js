@@ -10,6 +10,15 @@ router.get('/', async (req, res) => {
     const activeDevices = listRes.devices || [];
     const remembered = configService.getRememberedDevices();
 
+    // Map saved nicknames from rememberedDevices onto activeDevices
+    const activeWithNicknames = activeDevices.map((dev) => {
+      const match = remembered.find((r) => r.serial === dev.serial || (dev.ip && r.ip === dev.ip && r.port === dev.port));
+      return {
+        ...dev,
+        nickname: match ? match.nickname : undefined,
+      };
+    });
+
     // Mark remembered devices as online or offline
     const activeSerials = new Set(activeDevices.map((d) => d.serial));
     const processedRemembered = remembered.map((rem) => ({
@@ -17,8 +26,9 @@ router.get('/', async (req, res) => {
       isOnline: activeSerials.has(rem.serial) || activeSerials.has(`${rem.ip}:${rem.port}`),
     }));
 
-    // Auto-remember any active devices that aren't cached yet
+    // Auto-remember any active devices that aren't cached yet (ignore mDNS pseudodevices)
     activeDevices.forEach((dev) => {
+      if (dev.isMdns) return;
       const isCached = remembered.some((r) => r.serial === dev.serial || (dev.ip && r.ip === dev.ip && r.port === dev.port));
       if (!isCached && dev.state === 'device') {
         configService.saveRememberedDevice({
@@ -34,7 +44,7 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      active: activeDevices,
+      active: activeWithNicknames,
       remembered: processedRemembered,
       adbError: listRes.error,
     });

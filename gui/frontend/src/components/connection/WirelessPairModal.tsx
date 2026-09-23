@@ -182,27 +182,41 @@ export const WirelessPairModal: React.FC<WirelessPairModalProps> = ({
       {/* STEP 1: PAIRING */}
       {step === 1 && (
         <div className="space-y-4">
-          <div className="bg-zinc-900/70 border border-zinc-800 p-3 rounded-lg text-xs text-zinc-300 leading-relaxed">
-            <p className="font-semibold text-white mb-1">On your Android device:</p>
-            <p>1. Open <strong>Settings ➔ Developer options ➔ Wireless debugging</strong>.</p>
+          <div className="bg-zinc-900/70 border border-zinc-800 p-3.5 rounded-lg text-xs text-zinc-300 leading-relaxed space-y-1.5">
+            <p className="font-semibold text-white">How to pair over Wi-Fi:</p>
+            <p>1. On your phone: <strong>Settings ➔ Developer options ➔ Wireless debugging</strong>.</p>
             <p>2. Tap <strong>"Pair device with pairing code"</strong>.</p>
-            <p>3. Enter the IP, the <strong>pairing port</strong>, and the 6-digit code shown in that popup.</p>
+            <p className="text-amber-300 font-medium">⚠️ Keep that popup open on your phone screen while clicking Pair!</p>
+            <p className="text-[11px] text-zinc-400">If your device is already paired, switch to the <strong>"Already Paired (Quick Connect)"</strong> tab above.</p>
           </div>
 
           <div>
             <label className="block text-xs font-medium text-zinc-300 mb-1">
-              Device IP Address
+              6-Digit Pairing Code
             </label>
             <input
               type="text"
-              placeholder="e.g. 192.168.1.105"
-              value={ip}
-              onChange={(e) => setIp(e.target.value)}
-              className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-white transition-colors"
+              maxLength={6}
+              placeholder="e.g. 123456"
+              value={pairCode}
+              onChange={(e) => setPairCode(e.target.value.replace(/\D/g, ''))}
+              className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-white font-mono tracking-widest placeholder:text-zinc-600 focus:outline-none focus:border-white transition-colors"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-zinc-300 mb-1">
+                Device IP Address
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. 192.168.1.105"
+                value={ip}
+                onChange={(e) => setIp(e.target.value)}
+                className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-white transition-colors"
+              />
+            </div>
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">
                 Pairing Port
@@ -213,19 +227,6 @@ export const WirelessPairModal: React.FC<WirelessPairModalProps> = ({
                 value={pairPort}
                 onChange={(e) => setPairPort(e.target.value)}
                 className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-white transition-colors"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">
-                6-Digit Pairing Code
-              </label>
-              <input
-                type="text"
-                maxLength={6}
-                placeholder="123456"
-                value={pairCode}
-                onChange={(e) => setPairCode(e.target.value.replace(/\D/g, ''))}
-                className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-lg text-sm text-white font-mono tracking-widest placeholder:text-zinc-600 focus:outline-none focus:border-white transition-colors"
               />
             </div>
           </div>

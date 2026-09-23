@@ -29,3 +29,14 @@ code, kbd, samp, pre {
 ::-webkit-scrollbar-thumb:hover {
   background: #3F3F46;
 }
+
+/* Hide number input spinner arrows across all browsers */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}

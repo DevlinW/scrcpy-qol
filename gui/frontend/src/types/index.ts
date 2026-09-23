@@ -7,6 +7,7 @@ export interface Device {
   serial: string;
   state: string; // 'device', 'offline', 'unauthorized'
   model: string;
+  nickname?: string;
   type: 'usb' | 'wifi';
   ip: string;
   port: number;

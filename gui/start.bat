@@ -33,9 +33,12 @@ echo.
 echo Opening browser to http://localhost:5173 ...
 start http://localhost:5173
 
-echo.
 echo ========================================================
 echo   scrcpy-qol Dashboard is running!
-echo   Close this window or the background windows to stop.
+echo   Dashboard: http://localhost:5173
+echo   Backend:   http://localhost:5050
+echo.
+echo   To stop all servers anytime, run stop.bat
 echo ========================================================
 pause
+

@@ -3,7 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const configService = require('./configService');
 
+const binaryCache = {};
+
 function findBinary(binaryName) {
+  if (binaryCache[binaryName] && fs.existsSync(binaryCache[binaryName])) {
+    return binaryCache[binaryName];
+  }
+
   const isWin = process.platform === 'win32';
   const binExe = isWin ? `${binaryName}.exe` : binaryName;
 
@@ -14,26 +20,44 @@ function findBinary(binaryName) {
     const stat = fs.statSync(settings[customKey]);
     if (stat.isDirectory()) {
       const candidate = path.join(settings[customKey], binExe);
-      if (fs.existsSync(candidate)) return candidate;
+      if (fs.existsSync(candidate)) {
+        binaryCache[binaryName] = candidate;
+        return candidate;
+      }
     } else {
+      binaryCache[binaryName] = settings[customKey];
       return settings[customKey];
     }
   }
 
-  // 2. Check local repo paths (e.g. Project/scrcpy-qol or scrcpy release folders)
+  // 2. Check explicit system drive folders and PATH directories
+  const pathEntries = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+
   const candidateFolders = [
+    'C:\\platform-tools',
+    'C:\\scrcpy-win64-v4.1',
+    'C:\\scrcpy-win64',
+    'C:\\scrcpy',
+    'D:\\platform-tools',
+    'D:\\scrcpy-win64-v4.1',
+    'D:\\scrcpy-win64',
+    'D:\\scrcpy',
     path.join(__dirname, '..', '..', '..', '..'), // C:\Project\
     path.join(__dirname, '..', '..', '..'), // C:\Project\scrcpy-qol\
     path.join(__dirname, '..', '..', '..', 'bin'),
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'platform-tools') : null,
     process.env.ANDROID_HOME ? path.join(process.env.ANDROID_HOME, 'platform-tools') : null,
+    ...pathEntries,
   ].filter(Boolean);
 
   for (const folder of candidateFolders) {
-    const candidate = path.join(folder, binExe);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
+    try {
+      const candidate = path.join(folder, binExe);
+      if (fs.existsSync(candidate)) {
+        binaryCache[binaryName] = candidate;
+        return candidate;
+      }
+    } catch (_) {}
   }
 
   // 3. Fallback to system command name
@@ -104,10 +128,13 @@ async function listDevices() {
       const productMatch = line.match(/product:([^\s]+)/);
       const rawModel = modelMatch ? modelMatch[1].replace(/_/g, ' ') : (productMatch ? productMatch[1] : 'Android Device');
 
-      const isWifi = serial.includes(':'); // IP:PORT format
+      const isMdnsWifi = serial.includes('._adb-tls-connect') || serial.includes('_adb.');
+      const isDirectWifi = serial.includes(':');
+      const isWifi = isDirectWifi || isMdnsWifi;
+
       let ip = '';
       let port = 5555;
-      if (isWifi) {
+      if (isDirectWifi) {
         const [ipPart, portPart] = serial.split(':');
         ip = ipPart;
         port = parseInt(portPart, 10) || 5555;
@@ -118,6 +145,7 @@ async function listDevices() {
         state,
         model: rawModel,
         type: isWifi ? 'wifi' : 'usb',
+        isMdns: isMdnsWifi,
         ip,
         port,
         battery: null, // Will fetch concurrently
@@ -134,7 +162,14 @@ async function listDevices() {
     })
   );
 
-  return { success: true, devices };
+  // Deduplicate: If we have both a direct IP Wi-Fi connection and an mDNS discovery for the same device,
+  // prefer the direct IP one and filter out the cryptic mDNS duplicate
+  const hasDirectWifi = devices.some((d) => d.type === 'wifi' && !d.isMdns);
+  const filteredDevices = hasDirectWifi
+    ? devices.filter((d) => !d.isMdns)
+    : devices;
+
+  return { success: true, devices: filteredDevices };
 }
 
 async function getDeviceBattery(serial) {
@@ -156,25 +191,29 @@ async function getDeviceBattery(serial) {
 async function pairDevice(ip, port, code) {
   const adbPath = findBinary('adb');
   const target = `${ip}:${port}`;
+  console.log(`[adbService] Running adb pair: "${adbPath}" pair "${target}" "${code}"`);
   const res = await runCommand(adbPath, ['pair', target, code]);
+  console.log(`[adbService] Pair raw result:`, res);
 
-  const output = `${res.stdout} ${res.stderr}`.trim();
-  const isSuccess = res.success && /Successfully paired/i.test(output);
+  const combined = `${res.stdout} ${res.stderr} ${res.error || ''}`.trim();
+  const isSuccess = res.success && /Successfully paired/i.test(combined);
 
   return {
     success: isSuccess,
-    output,
-    error: isSuccess ? null : (output || 'Failed to pair device. Please check pairing code and port.'),
+    output: combined,
+    error: isSuccess ? null : (combined || 'Failed to pair device. Ensure the pairing code dialog is open on your phone.'),
   };
 }
 
 async function connectDevice(ip, port, nickname) {
   const adbPath = findBinary('adb');
   const target = `${ip}:${port || 5555}`;
+  console.log(`[adbService] Running adb connect: "${adbPath}" connect "${target}"`);
   const res = await runCommand(adbPath, ['connect', target]);
+  console.log(`[adbService] Connect raw result:`, res);
 
-  const output = `${res.stdout} ${res.stderr}`.trim();
-  const isSuccess = res.success && (/connected to/i.test(output) && !/cannot connect|failed/i.test(output));
+  const combined = `${res.stdout} ${res.stderr} ${res.error || ''}`.trim();
+  const isSuccess = res.success && (/connected to/i.test(combined) && !/cannot connect|failed/i.test(combined));
 
   if (isSuccess) {
     // Save to remembered devices
@@ -189,9 +228,9 @@ async function connectDevice(ip, port, nickname) {
 
   return {
     success: isSuccess,
-    output,
+    output: combined,
     serial: target,
-    error: isSuccess ? null : (output || 'Failed to connect. Make sure Wireless Debugging is on and port is correct.'),
+    error: isSuccess ? null : (combined || 'Failed to connect. Make sure Wireless Debugging is on and port is correct.'),
   };
 }
 

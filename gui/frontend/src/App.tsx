@@ -1,8 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Device, RememberedDevice, SystemStatus, AppSettings, ToastMessage } from './types';
+import {
+  Device,
+  RememberedDevice,
+  SystemStatus,
+  AppSettings,
+  ToastMessage,
+  LibraryItem,
+  ScrcpySession,
+  LogEntry,
+} from './types';
 import {
   fetchDevices,
   fetchStatus,
+  fetchLibrary,
+  fetchActiveSessions,
+  fetchSessionLogs,
+  launchScrcpy,
+  stopScrcpy,
+  removeLibraryItem,
   updateSettings,
   disconnectDevice,
   pingDevice,
@@ -15,6 +30,9 @@ import { Navbar } from './components/common/Navbar';
 import { AdbStatusBar } from './components/connection/AdbStatusBar';
 import { ActiveDevicesGrid } from './components/connection/ActiveDevicesGrid';
 import { RememberedList } from './components/connection/RememberedList';
+import { LibraryShelf } from './components/library/LibraryShelf';
+import { AddAppModal } from './components/library/AddAppModal';
+import { TerminalDrawer } from './components/console/TerminalDrawer';
 import { WirelessPairModal } from './components/connection/WirelessPairModal';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { ToastContainer } from './components/common/Toast';
@@ -22,11 +40,18 @@ import { ToastContainer } from './components/common/Toast';
 export const App: React.FC = () => {
   const [activeDevices, setActiveDevices] = useState<Device[]>([]);
   const [rememberedDevices, setRememberedDevices] = useState<RememberedDevice[]>([]);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [activeSessions, setActiveSessions] = useState<ScrcpySession[]>([]);
+  const [sessionLogs, setSessionLogs] = useState<LogEntry[]>([]);
+
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
+  // Modals & Drawers
   const [isPairModalOpen, setIsPairModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isAddAppModalOpen, setIsAddAppModalOpen] = useState(false);
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -45,33 +70,51 @@ export const App: React.FC = () => {
   }, []);
 
   // Fetch initial data
-  const loadData = useCallback(async (quiet = false) => {
-    if (!quiet) setIsRefreshing(true);
-    try {
-      const [devRes, statRes] = await Promise.all([
-        fetchDevices().catch((e) => ({ active: [], remembered: [], adbError: e.message })),
-        fetchStatus().catch(() => null),
-      ]);
+  const loadData = useCallback(
+    async (quiet = false) => {
+      if (!quiet) setIsRefreshing(true);
+      try {
+        const [devRes, statRes, libRes, sessRes] = await Promise.all([
+          fetchDevices().catch((e) => ({ active: [], remembered: [], adbError: e.message })),
+          fetchStatus().catch(() => null),
+          fetchLibrary().catch(() => ({ success: true, library: [] })),
+          fetchActiveSessions().catch(() => ({ success: true, sessions: [] })),
+        ]);
 
-      if (devRes) {
-        setActiveDevices(devRes.active || []);
-        setRememberedDevices(devRes.remembered || []);
-      }
+        if (devRes) {
+          setActiveDevices(devRes.active || []);
+          setRememberedDevices(devRes.remembered || []);
+        }
 
-      if (statRes) {
-        setSystemStatus(statRes.status);
-        setSettings(statRes.settings);
+        if (statRes) {
+          setSystemStatus(statRes.status);
+          setSettings(statRes.settings);
+        }
+
+        if (libRes) {
+          setLibrary(libRes.library || []);
+        }
+
+        if (sessRes) {
+          setActiveSessions(sessRes.sessions || []);
+          if (sessRes.sessions?.length > 0) {
+            // Load logs for primary active session
+            const firstSerial = sessRes.sessions[0].serial;
+            fetchSessionLogs(firstSerial).then((l) => setSessionLogs(l.logs || []));
+          }
+        }
+      } catch (err: any) {
+        addToast({
+          type: 'error',
+          title: 'Connection Error',
+          description: err.message || 'Could not load data from backend.',
+        });
+      } finally {
+        if (!quiet) setIsRefreshing(false);
       }
-    } catch (err: any) {
-      addToast({
-        type: 'error',
-        title: 'Connection Error',
-        description: err.message || 'Could not load device data from backend.',
-      });
-    } finally {
-      if (!quiet) setIsRefreshing(false);
-    }
-  }, [addToast]);
+    },
+    [addToast]
+  );
 
   useEffect(() => {
     loadData();
@@ -82,13 +125,145 @@ export const App: React.FC = () => {
         setActiveDevices(data.devices || []);
       } else if (data.type === 'system:status') {
         setSystemStatus(data.status);
+      } else if (data.type === 'scrcpy:sessions') {
+        setActiveSessions(data.sessions || []);
+      } else if (data.type === 'scrcpy:status') {
+        if (data.status === 'running') {
+          setActiveSessions((prev) => {
+            const filtered = prev.filter((s) => s.serial !== data.serial);
+            return [
+              ...filtered,
+              {
+                serial: data.serial,
+                pid: data.pid,
+                startTime: new Date().toISOString(),
+                status: 'running',
+                options: data.options,
+              },
+            ];
+          });
+        } else if (data.status === 'stopped') {
+          setActiveSessions((prev) => prev.filter((s) => s.serial !== data.serial));
+        }
+      } else if (data.type === 'scrcpy:log') {
+        setSessionLogs((prev) => {
+          const updated = [...prev, data.log];
+          return updated.length > 200 ? updated.slice(updated.length - 200) : updated;
+        });
       }
     });
 
     return () => unsubscribe();
   }, [loadData]);
 
-  // Action: Disconnect
+  // --- Scrcpy Session Actions ---
+
+  const handleLaunchDevice = async (device: Device, bitRate = '8M') => {
+    try {
+      setIsTerminalOpen(true);
+      const res = await launchScrcpy({
+        serial: device.serial,
+        bitRate,
+        stayAwake: true,
+      });
+
+      if (res.success) {
+        addToast({
+          type: 'success',
+          title: 'scrcpy Started',
+          description: `Streaming ${device.nickname || device.model} at ${bitRate} (PID: ${res.pid})`,
+        });
+      } else {
+        addToast({
+          type: 'error',
+          title: 'Launch Failed',
+          description: res.error || 'Failed to spawn scrcpy process.',
+        });
+      }
+    } catch (err: any) {
+      addToast({
+        type: 'error',
+        title: 'Launch Error',
+        description: err.message,
+      });
+    }
+  };
+
+  const handleLaunchLibraryApp = async (item: LibraryItem, serial: string) => {
+    try {
+      setIsTerminalOpen(true);
+      const res = await launchScrcpy({
+        serial,
+        bitRate: item.bitRate || '8M',
+        turnScreenOff: item.turnScreenOff,
+        stayAwake: item.stayAwake !== undefined ? item.stayAwake : true,
+        fullscreen: item.fullscreen,
+        packageName: item.packageName,
+        customFlags: item.customFlags,
+      });
+
+      if (res.success) {
+        addToast({
+          type: 'success',
+          title: `Launching ${item.title}`,
+          description: `Streaming app on ${serial} (PID: ${res.pid})`,
+        });
+      } else {
+        addToast({
+          type: 'error',
+          title: 'App Launch Failed',
+          description: res.error || 'Failed to launch scrcpy for this app.',
+        });
+      }
+    } catch (err: any) {
+      addToast({
+        type: 'error',
+        title: 'Launch Error',
+        description: err.message,
+      });
+    }
+  };
+
+  const handleStopSession = async (serial: string) => {
+    try {
+      const res = await stopScrcpy(serial);
+      if (res.success) {
+        addToast({
+          type: 'info',
+          title: 'scrcpy Terminated',
+          description: `Stopped session for ${serial}`,
+        });
+      }
+    } catch (err: any) {
+      addToast({
+        type: 'error',
+        title: 'Error Stopping Session',
+        description: err.message,
+      });
+    }
+  };
+
+  const handleRemoveLibraryApp = async (item: LibraryItem) => {
+    try {
+      await removeLibraryItem(item.id);
+      setLibrary((prev) => prev.filter((i) => i.id !== item.id));
+
+      addToast({
+        type: 'info',
+        title: 'Removed from Library',
+        description: `${item.title} removed from quick launch shelf.`,
+      });
+    } catch (err: any) {
+      addToast({
+        type: 'error',
+        title: 'Remove Error',
+        description: err.message,
+      });
+    }
+  };
+
+  // --- Device Actions ---
+
   const handleDisconnect = async (serial: string) => {
     try {
       const res = await disconnectDevice(serial);
@@ -109,7 +284,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Action: Ping
   const handlePing = async (serial: string): Promise<number | null> => {
     try {
       const res = await pingDevice(serial);
@@ -138,7 +312,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Action: Reconnect from Remembered
   const handleReconnect = async (dev: RememberedDevice) => {
     try {
       const res = await connectDevice(dev.ip, dev.port, dev.nickname);
@@ -165,7 +338,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Action: Forget Device (with Golden Rule 6: Permit easy reversal of actions via Undo)
   const handleForget = async (dev: RememberedDevice) => {
     try {
       await forgetDevice(dev.id);
@@ -178,7 +350,6 @@ export const App: React.FC = () => {
         undoAction: {
           label: 'Undo',
           onClick: async () => {
-            // Restore device
             await connectDevice(dev.ip, dev.port, dev.nickname);
             loadData(true);
           },
@@ -193,7 +364,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Action: Update inline port
   const handleUpdatePort = async (id: string, newPort: number) => {
     try {
       await updateRememberedDevice(id, { port: newPort });
@@ -214,7 +384,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Action: Save settings
   const handleSaveSettings = async (newSettings: Partial<AppSettings>) => {
     try {
       const res = await updateSettings(newSettings);
@@ -235,12 +404,16 @@ export const App: React.FC = () => {
     }
   };
 
+  const activeStreamingCount = activeSessions.filter((s) => s.status === 'running').length;
+
   return (
-    <div className="min-h-screen bg-[#0A0A0C] text-[#F4F4F5] flex flex-col font-sans">
+    <div className="min-h-screen bg-[#0A0A0C] text-[#F4F4F5] flex flex-col font-sans pb-16">
       <Navbar
         systemStatus={systemStatus}
+        activeSessionsCount={activeStreamingCount}
         onOpenPairModal={() => setIsPairModalOpen(true)}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+        onOpenTerminal={() => setIsTerminalOpen((prev) => !prev)}
         onRefresh={() => loadData(false)}
         isRefreshing={isRefreshing}
       />
@@ -250,21 +423,32 @@ export const App: React.FC = () => {
         onOpenSettings={() => setIsSettingsModalOpen(true)}
       />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 space-y-10">
+        {/* Quick Launch Library (Playnite style) */}
+        <LibraryShelf
+          library={library}
+          activeDevices={activeDevices}
+          activeSessions={activeSessions}
+          onLaunchApp={handleLaunchLibraryApp}
+          onStopSession={handleStopSession}
+          onRemoveApp={handleRemoveLibraryApp}
+          onOpenAddModal={() => setIsAddAppModalOpen(true)}
+          onOpenTerminal={() => setIsTerminalOpen(true)}
+        />
+
+        {/* Active Connected Devices */}
         <ActiveDevicesGrid
           devices={activeDevices}
+          activeSessions={activeSessions}
           onDisconnect={handleDisconnect}
           onPing={handlePing}
           onOpenPairModal={() => setIsPairModalOpen(true)}
-          onLaunch={(dev) => {
-            addToast({
-              type: 'info',
-              title: 'Launch Scrcpy',
-              description: `Ready to stream ${dev.model} (${dev.serial}). Video controls are coming in Phase 2!`,
-            });
-          }}
+          onLaunch={handleLaunchDevice}
+          onStop={handleStopSession}
+          onOpenTerminal={() => setIsTerminalOpen(true)}
         />
 
+        {/* Remembered Offline Devices */}
         <RememberedList
           devices={rememberedDevices}
           onConnect={handleReconnect}
@@ -273,7 +457,37 @@ export const App: React.FC = () => {
         />
       </main>
 
+      {/* Terminal Drawer Console */}
+      <TerminalDrawer
+        isOpen={isTerminalOpen}
+        onClose={() => setIsTerminalOpen(false)}
+        logs={sessionLogs}
+        activeSessions={activeSessions}
+        onStopSession={handleStopSession}
+        onClearLogs={() => setSessionLogs([])}
+      />
+
       {/* Modals */}
+      <AddAppModal
+        isOpen={isAddAppModalOpen}
+        onClose={() => setIsAddAppModalOpen(false)}
+        activeDevices={activeDevices}
+        existingLibrary={library}
+        onAppAdded={(newItem) => {
+          setLibrary((prev) => {
+            const exists = prev.some((i) => i.id === newItem.id || i.packageName === newItem.packageName);
+            return exists
+              ? prev.map((i) => (i.id === newItem.id || i.packageName === newItem.packageName ? newItem : i))
+              : [...prev, newItem];
+          });
+          addToast({
+            type: 'success',
+            title: 'Added to Library',
+            description: `${newItem.title} added to your quick launch library.`,
+          });
+        }}
+      />
+
       <WirelessPairModal
         isOpen={isPairModalOpen}
         onClose={() => setIsPairModalOpen(false)}

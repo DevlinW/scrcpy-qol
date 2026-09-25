@@ -1,23 +1,29 @@
 import React from 'react';
-import { Device } from '../../types';
+import { Device, ScrcpySession } from '../../types';
 import { DeviceCard } from './DeviceCard';
 import { Smartphone, Plus } from 'lucide-react';
 import { Button } from '../common/Button';
 
 interface ActiveDevicesGridProps {
   devices: Device[];
+  activeSessions: ScrcpySession[];
   onDisconnect: (serial: string) => Promise<void>;
   onPing: (serial: string) => Promise<number | null>;
   onOpenPairModal: () => void;
-  onLaunch?: (device: Device) => void;
+  onLaunch: (device: Device, bitRate?: string) => Promise<void>;
+  onStop: (serial: string) => Promise<void>;
+  onOpenTerminal: () => void;
 }
 
 export const ActiveDevicesGrid: React.FC<ActiveDevicesGridProps> = ({
   devices,
+  activeSessions,
   onDisconnect,
   onPing,
   onOpenPairModal,
   onLaunch,
+  onStop,
+  onOpenTerminal,
 }) => {
   return (
     <section className="mb-10">
@@ -50,15 +56,23 @@ export const ActiveDevicesGrid: React.FC<ActiveDevicesGridProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {devices.map((device) => (
-            <DeviceCard
-              key={device.serial}
-              device={device}
-              onDisconnect={onDisconnect}
-              onPing={onPing}
-              onLaunch={onLaunch}
-            />
-          ))}
+          {devices.map((device) => {
+            const session = activeSessions.find(
+              (s) => s.serial === device.serial && s.status === 'running'
+            );
+            return (
+              <DeviceCard
+                key={device.serial}
+                device={device}
+                activeSession={session}
+                onDisconnect={onDisconnect}
+                onPing={onPing}
+                onLaunch={onLaunch}
+                onStop={onStop}
+                onOpenTerminal={onOpenTerminal}
+              />
+            );
+          })}
         </div>
       )}
     </section>

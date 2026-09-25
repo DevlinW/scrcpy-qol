@@ -2,6 +2,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const configService = require('./configService');
+const security = require('../utils/security');
 
 const binaryCache = {};
 
@@ -70,8 +71,8 @@ function runCommand(binPath, args = [], options = {}) {
       resolve({
         success: !error,
         code: error ? error.code : 0,
-        stdout: (stdout || '').trim(),
-        stderr: (stderr || '').trim(),
+        stdout: (stdout || '').toString().trim(),
+        stderr: (stderr || '').toString().trim(),
         error: error ? error.message : null,
       });
     });
@@ -112,18 +113,15 @@ async function listDevices() {
   const lines = res.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
   const devices = [];
 
-  // Line 0 is usually "List of devices attached"
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
 
-    // Pattern: serial state model:XXX device:YYY
     const parts = line.split(/\s+/);
     if (parts.length >= 2) {
       const serial = parts[0];
-      const state = parts[1]; // 'device', 'offline', 'unauthorized'
+      const state = parts[1];
 
-      // Extract model:XXX if present
       const modelMatch = line.match(/model:([^\s]+)/);
       const productMatch = line.match(/product:([^\s]+)/);
       const rawModel = modelMatch ? modelMatch[1].replace(/_/g, ' ') : (productMatch ? productMatch[1] : 'Android Device');
@@ -148,12 +146,11 @@ async function listDevices() {
         isMdns: isMdnsWifi,
         ip,
         port,
-        battery: null, // Will fetch concurrently
+        battery: null,
       });
     }
   }
 
-  // Fetch battery levels concurrently for devices in 'device' state
   await Promise.all(
     devices.map(async (dev) => {
       if (dev.state === 'device') {
@@ -162,8 +159,6 @@ async function listDevices() {
     })
   );
 
-  // Deduplicate: If we have both a direct IP Wi-Fi connection and an mDNS discovery for the same device,
-  // prefer the direct IP one and filter out the cryptic mDNS duplicate
   const hasDirectWifi = devices.some((d) => d.type === 'wifi' && !d.isMdns);
   const filteredDevices = hasDirectWifi
     ? devices.filter((d) => !d.isMdns)
@@ -178,7 +173,7 @@ async function getDeviceBattery(serial) {
   if (!res.success) return null;
 
   const levelMatch = res.stdout.match(/level:\s*(\d+)/i);
-  const statusMatch = res.stdout.match(/status:\s*(\d+)/i); // 2: charging
+  const statusMatch = res.stdout.match(/status:\s*(\d+)/i);
   if (levelMatch) {
     return {
       level: parseInt(levelMatch[1], 10),
@@ -191,9 +186,7 @@ async function getDeviceBattery(serial) {
 async function pairDevice(ip, port, code) {
   const adbPath = findBinary('adb');
   const target = `${ip}:${port}`;
-  console.log(`[adbService] Running adb pair: "${adbPath}" pair "${target}" "${code}"`);
   const res = await runCommand(adbPath, ['pair', target, code]);
-  console.log(`[adbService] Pair raw result:`, res);
 
   const combined = `${res.stdout} ${res.stderr} ${res.error || ''}`.trim();
   const isSuccess = res.success && /Successfully paired/i.test(combined);
@@ -208,15 +201,12 @@ async function pairDevice(ip, port, code) {
 async function connectDevice(ip, port, nickname) {
   const adbPath = findBinary('adb');
   const target = `${ip}:${port || 5555}`;
-  console.log(`[adbService] Running adb connect: "${adbPath}" connect "${target}"`);
   const res = await runCommand(adbPath, ['connect', target]);
-  console.log(`[adbService] Connect raw result:`, res);
 
   const combined = `${res.stdout} ${res.stderr} ${res.error || ''}`.trim();
   const isSuccess = res.success && (/connected to/i.test(combined) && !/cannot connect|failed/i.test(combined));
 
   if (isSuccess) {
-    // Save to remembered devices
     configService.saveRememberedDevice({
       ip,
       port: parseInt(port, 10) || 5555,
@@ -237,10 +227,9 @@ async function connectDevice(ip, port, nickname) {
 async function disconnectDevice(serial) {
   const adbPath = findBinary('adb');
   const res = await runCommand(adbPath, ['disconnect', serial]);
-  const output = `${res.stdout} ${res.stderr}`.trim();
   return {
     success: res.success,
-    output,
+    output: `${res.stdout} ${res.stderr}`.trim(),
   };
 }
 
@@ -258,6 +247,145 @@ async function pingDevice(serial) {
   };
 }
 
+/**
+ * Beautifies package name for user-facing display (e.g. com.spotify.music -> Spotify Music)
+ */
+function beautifyPackageName(pkg) {
+  if (!pkg) return 'Unknown App';
+  const parts = pkg.split('.').filter(Boolean);
+  if (parts.length === 1) return parts[0];
+
+  const meaningful = parts.filter(
+    (p) => !['com', 'org', 'net', 'io', 'android', 'google', 'app', 'mobile', 'games'].includes(p.toLowerCase())
+  );
+
+  if (meaningful.length > 0) {
+    return meaningful
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(' ');
+  }
+  return parts[parts.length - 1].charAt(0).toUpperCase() + parts[parts.length - 1].slice(1);
+}
+
+/**
+ * Scans installed 3rd-party packages on connected device
+ */
+async function getInstalledPackages(serial) {
+  if (!security.isValidSerial(serial)) {
+    return { success: false, error: 'Invalid device serial.', packages: [] };
+  }
+
+  const adbPath = findBinary('adb');
+  const res = await runCommand(adbPath, ['-s', serial, 'shell', 'pm', 'list', 'packages', '-3', '-f']);
+
+  if (!res.success) {
+    return { success: false, error: res.stderr || res.error, packages: [] };
+  }
+
+  const lines = res.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  const packages = [];
+
+  for (const line of lines) {
+    // Format: package:/data/app/~~.../base.apk=com.example.app
+    const match = line.match(/^package:(.+?)=([a-zA-Z0-9_.]+)$/);
+    if (match) {
+      const apkPath = match[1];
+      const packageName = match[2];
+
+      if (security.isValidPackageName(packageName)) {
+        const cachedIconPath = configService.getCachedIconPath(packageName);
+        const hasCachedIcon = !!(cachedIconPath && fs.existsSync(cachedIconPath));
+
+        packages.push({
+          packageName,
+          displayName: beautifyPackageName(packageName),
+          apkPath,
+          hasCachedIcon,
+        });
+      }
+    }
+  }
+
+  // Sort alphabetically by displayName
+  packages.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  return { success: true, packages };
+}
+
+/**
+ * Extracts and caches launcher icon directly from APK on device
+ */
+async function extractAppIcon(serial, apkPath, packageName) {
+  if (!security.isValidSerial(serial) || !security.isValidPackageName(packageName) || !apkPath) {
+    return null;
+  }
+
+  // 1. Check if already cached
+  const cachedPath = configService.getCachedIconPath(packageName);
+  if (cachedPath && fs.existsSync(cachedPath)) {
+    return cachedPath;
+  }
+
+  const adbPath = findBinary('adb');
+
+  // 2. Query zip listing for launcher PNGs
+  const listRes = await runCommand(adbPath, ['-s', serial, 'shell', 'unzip', '-l', apkPath]);
+  if (!listRes.success || !listRes.stdout) {
+    return null;
+  }
+
+  const lines = listRes.stdout.split('\n').map((l) => l.trim());
+  const pngEntries = [];
+
+  for (const line of lines) {
+    const match = line.match(/\s+(\d+)\s+[\d-]+\s+[\d:]+\s+(.+)$/);
+    if (match) {
+      const entryName = match[2];
+      if (
+        entryName.endsWith('.png') &&
+        (entryName.includes('ic_launcher') || entryName.includes('app_icon') || entryName.includes('icon'))
+      ) {
+        pngEntries.push(entryName);
+      }
+    }
+  }
+
+  if (pngEntries.length === 0) {
+    return null;
+  }
+
+  // Rank PNG entries: xxxhdpi > xxhdpi > xhdpi > hdpi > mdpi
+  const priority = ['xxxhdpi', 'xxhdpi', 'xhdpi', 'hdpi', 'mdpi'];
+  let bestEntry = pngEntries[0];
+  for (const density of priority) {
+    const found = pngEntries.find((e) => e.includes(density) && (e.includes('ic_launcher') || e.includes('app_icon')));
+    if (found) {
+      bestEntry = found;
+      break;
+    }
+  }
+
+  // 3. Extract binary PNG using exec-out
+  return new Promise((resolve) => {
+    execFile(
+      adbPath,
+      ['-s', serial, 'exec-out', 'unzip', '-p', apkPath, bestEntry],
+      { encoding: 'buffer', maxBuffer: 5 * 1024 * 1024, timeout: 10000 },
+      (err, stdout) => {
+        if (!err && stdout && security.validatePngBuffer(stdout)) {
+          try {
+            const savedPath = configService.saveCachedIcon(packageName, stdout);
+            return resolve(savedPath);
+          } catch (_) {
+            return resolve(null);
+          }
+        }
+        resolve(null);
+      }
+    );
+  });
+}
+
 module.exports = {
   findBinary,
   checkStatus,
@@ -267,4 +395,7 @@ module.exports = {
   connectDevice,
   disconnectDevice,
   pingDevice,
+  beautifyPackageName,
+  getInstalledPackages,
+  extractAppIcon,
 };

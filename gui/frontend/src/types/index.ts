@@ -53,3 +53,58 @@ export interface ToastMessage {
     onClick: () => void;
   };
 }
+
+export interface LibraryItem {
+  id: string;
+  title: string;
+  packageName: string;
+  description?: string;
+  iconUrl?: string;
+  bannerUrl?: string;
+  source: 'extracted' | 'api' | 'manual';
+  bitRate?: string;
+  turnScreenOff?: boolean;
+  stayAwake?: boolean;
+  fullscreen?: boolean;
+  customFlags?: string;
+  lastPlayed?: string | null;
+  addedAt?: string;
+}
+
+export interface ScrcpySession {
+  serial: string;
+  pid: number;
+  startTime: string;
+  status: 'running' | 'stopped' | 'error';
+  options?: {
+    bitRate?: string;
+    turnScreenOff?: boolean;
+    stayAwake?: boolean;
+    fullscreen?: boolean;
+    packageName?: string;
+    customFlags?: string;
+  };
+}
+
+export interface LogEntry {
+  timestamp: string;
+  type: 'stdout' | 'stderr' | 'system';
+  line: string;
+}
+
+export interface ScannedPackage {
+  packageName: string;
+  displayName: string;
+  apkPath: string;
+  hasCachedIcon: boolean;
+}
+
+export interface MetadataResult {
+  id: string;
+  title: string;
+  packageName?: string;
+  description?: string;
+  iconUrl?: string;
+  bannerUrl?: string;
+  source: string;
+}

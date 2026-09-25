@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const fs = require('fs');
 const adbService = require('../services/adbService');
 const configService = require('../services/configService');
+const security = require('../utils/security');
 
 // GET /api/devices - Get both live active devices and cached remembered devices
 router.get('/', async (req, res) => {
@@ -50,6 +52,65 @@ router.get('/', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/devices/:serial/packages - Scan installed 3rd-party packages on device
+router.get('/:serial/packages', async (req, res) => {
+  try {
+    const { serial } = req.params;
+    if (!security.isValidSerial(serial)) {
+      return res.status(400).json({ success: false, error: 'Invalid device serial.' });
+    }
+    const result = await adbService.getInstalledPackages(serial);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/devices/:serial/icons/:packageName - Extract & stream app icon
+router.get('/:serial/icons/:packageName', async (req, res) => {
+  try {
+    const { serial, packageName } = req.params;
+    const { apkPath } = req.query;
+
+    const safePkg = packageName.replace(/\.png$/i, '');
+    if (!security.isValidSerial(serial) || !security.isValidPackageName(safePkg)) {
+      return res.status(400).json({ error: 'Invalid serial or package name' });
+    }
+
+    // 1. Check disk cache first
+    const cachedPath = configService.getCachedIconPath(safePkg);
+    if (cachedPath && fs.existsSync(cachedPath)) {
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(cachedPath);
+    }
+
+    // 2. If not in cache and apkPath provided, extract directly
+    let targetApk = apkPath;
+    if (!targetApk) {
+      // Look up apk path
+      const scan = await adbService.getInstalledPackages(serial);
+      const match = (scan.packages || []).find((p) => p.packageName === safePkg);
+      if (match) targetApk = match.apkPath;
+    }
+
+    if (!targetApk) {
+      return res.status(404).json({ error: 'APK path not found for package' });
+    }
+
+    const iconPath = await adbService.extractAppIcon(serial, targetApk, safePkg);
+    if (iconPath && fs.existsSync(iconPath)) {
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(iconPath);
+    }
+
+    return res.status(404).json({ error: 'Icon could not be extracted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -1,20 +1,24 @@
 import React from 'react';
-import { Wifi, Settings, RefreshCw, Smartphone } from 'lucide-react';
+import { Wifi, Settings, RefreshCw, Smartphone, Terminal, Radio } from 'lucide-react';
 import { Button } from './Button';
 import { SystemStatus } from '../../types';
 
 interface NavbarProps {
   systemStatus: SystemStatus | null;
+  activeSessionsCount?: number;
   onOpenPairModal: () => void;
   onOpenSettingsModal: () => void;
+  onOpenTerminal?: () => void;
   onRefresh: () => void;
   isRefreshing: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   systemStatus,
+  activeSessionsCount = 0,
   onOpenPairModal,
   onOpenSettingsModal,
+  onOpenTerminal,
   onRefresh,
   isRefreshing,
 }) => {
@@ -30,8 +34,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Smartphone className="w-4 h-4" />
             </div>
             <div>
-              <span className="font-bold text-base tracking-tight text-white">scrcpy<span className="text-zinc-400 font-normal">.qol</span></span>
-              <span className="hidden sm:inline-block ml-2 text-[10px] uppercase font-mono tracking-widest px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700/60">v4.1 GUI</span>
+              <span className="font-bold text-base tracking-tight text-white">
+                scrcpy<span className="text-zinc-400 font-normal">.qol</span>
+              </span>
+              <span className="hidden sm:inline-block ml-2 text-[10px] uppercase font-mono tracking-widest px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700/60">
+                v4.1 GUI
+              </span>
             </div>
           </div>
 
@@ -43,7 +51,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                 ? 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700'
                 : 'bg-rose-950/40 text-rose-300 border-rose-900/60 hover:bg-rose-950/60'
             }`}
-            title={adbReady ? `ADB Ready (${systemStatus?.adb.version || 'detected'})` : 'ADB not found. Click to configure path.'}
+            title={
+              adbReady
+                ? `ADB Ready (${systemStatus?.adb.version || 'detected'})`
+                : 'ADB not found. Click to configure path.'
+            }
           >
             <span
               className={`w-2 h-2 rounded-full ${
@@ -54,10 +66,35 @@ export const Navbar: React.FC<NavbarProps> = ({
               {adbReady ? 'ADB Ready' : 'ADB Missing'}
             </span>
           </div>
+
+          {/* Active Session Badge in Header */}
+          {activeSessionsCount > 0 && onOpenTerminal && (
+            <button
+              type="button"
+              onClick={onOpenTerminal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 hover:bg-emerald-900/80 transition-colors shadow-sm"
+              title="Click to view live scrcpy console"
+            >
+              <Radio className="w-3.5 h-3.5 animate-pulse text-emerald-400" />
+              <span>{activeSessionsCount} Streaming</span>
+            </button>
+          )}
         </div>
 
         {/* Action Controls */}
         <div className="flex items-center gap-2.5">
+          {onOpenTerminal && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onOpenTerminal}
+              icon={<Terminal className="w-3.5 h-3.5" />}
+              title="Toggle scrcpy terminal drawer"
+            >
+              <span className="hidden sm:inline">Console</span>
+            </Button>
+          )}
+
           <Button
             variant="ghost"
             size="sm"
